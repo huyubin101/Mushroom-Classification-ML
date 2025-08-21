@@ -1,0 +1,501 @@
+---
+title: "STOR565_Project"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+install.packages("readxl")
+install.packages("tree")
+install.packages("dplyr")
+install.packages("caret")         # For data splitting and model evaluation
+install.packages("pROC")          # For ROC curve and AUC
+install.packages("car")           # For checking multicollinearity
+install.packages("glmnet")
+```
+
+```{r}
+library(readxl)
+library(tree)
+library(dplyr)
+library(caret)
+library(pROC)
+library(car)
+library(caret)
+library(glmnet)
+```
+
+```{r}
+#First, we read the excel file.
+data <- read_excel("Mushroom dataset3.xlsx")
+head(data)
+```
+
+```{r}
+# Convert column names to valid R names
+colnames(data) <- make.names(colnames(data), unique = TRUE)
+
+# Convert all character variables to factors and create binary target variable
+data <- data %>%
+  mutate(across(where(is.character), as.factor)) %>%
+  mutate(class01 = as.factor(ifelse(class == "poisonous", 1, 0)))
+```
+
+
+```{r}
+# Step 3: Split the data into training and testing sets
+set.seed(123)
+train_indices <- createDataPartition(data$class01, p = 2/3, list = FALSE)
+mushroom_train <- data[train_indices, ]
+mushroom_test <- data[-train_indices, ]
+
+# Step 4: Ensure the target variable is a factor
+mushroom_train$class01 <- as.factor(mushroom_train$class01)
+mushroom_test$class01 <- as.factor(mushroom_test$class01)
+```
+
+
+```{r}
+# Step 1: Create the formula for the logistic regression
+predictors <- setdiff(names(mushroom_train), c("class", "class01"))  # Exclude target variables
+formula <- as.formula(paste("class01 ~", paste(predictors, collapse = " + ")))
+
+# Step 2: Fit the logistic regression model
+logistic_model <- glm(formula, data = mushroom_train, family = binomial)
+
+# Step 3: Summarize the model
+summary(logistic_model)
+
+# Step 4: Make predictions on the test set
+predicted_probs <- predict(logistic_model, newdata = mushroom_test, type = "response")
+predicted_classes <- ifelse(predicted_probs > 0.5, 1, 0)
+
+
+# Step 5: Evaluate the model
+# Confusion matrix
+library(caret)
+confusion <- confusionMatrix(as.factor(predicted_classes), mushroom_test$class01, positive = "1")
+print(confusion)
+
+# Step 6: Plot ROC curve and calculate AUC
+library(pROC)
+roc_curve <- roc(as.numeric(as.character(mushroom_test$class01)), predicted_probs)
+plot(roc_curve, main = "ROC Curve - Logistic Regression")
+auc_value <- auc(roc_curve)
+print(paste("AUC:", auc_value))
+```
+```{r}
+# LASSO Regression
+# Prepare the data for glmnet
+# Remove the target variable 'class01' from the predictors
+x_train <- model.matrix(class01 ~ . - class, data = mushroom_train)[, -1]
+x_test <- model.matrix(class01 ~ . - class, data = mushroom_test)[, -1]
+
+# Convert the target variable to numeric (0 and 1)
+y_train <- as.numeric(as.character(mushroom_train$class01))
+y_test <- as.numeric(as.character(mushroom_test$class01))
+
+set.seed(123)
+cv_lasso <- cv.glmnet(x_train, y_train, alpha = 1, family = "binomial", nfolds = 10)
+lambda_lasso <- cv_lasso$lambda.min
+print(paste("Optimal Lambda for LASSO:", lambda_lasso))
+
+# Fit LASSO model
+lasso_model <- glmnet(x_train, y_train, alpha = 1, lambda = lambda_lasso, family = "binomial")
+
+# Make predictions
+lasso_probs <- predict(lasso_model, s = lambda_lasso, newx = x_test, type = "response")
+lasso_classes <- ifelse(lasso_probs > 0.5, 1, 0)
+
+# Evaluate LASSO
+confusion_lasso <- confusionMatrix(as.factor(lasso_classes), as.factor(y_test), positive = "1")
+print(confusion_lasso)
+```
+```{r}
+# Prepare the data for glmnet
+# Remove the target variable 'class01' from the predictors
+x_train <- model.matrix(class01 ~ . - class, data = mushroom_train)[, -1]
+x_test <- model.matrix(class01 ~ . - class, data = mushroom_test)[, -1]
+
+# Convert the target variable to numeric (0 and 1)
+y_train <- as.numeric(as.character(mushroom_train$class01))
+y_test <- as.numeric(as.character(mushroom_test$class01))
+
+# Perform Ridge Regression
+set.seed(123)
+cv_ridge <- cv.glmnet(x_train, y_train, alpha = 0, family = "binomial", nfolds = 10)
+
+# Extract the optimal lambda
+lambda_ridge <- cv_ridge$lambda.min
+print(paste("Optimal Lambda for Ridge:", lambda_ridge))
+
+# Fit the final Ridge model
+ridge_model <- glmnet(x_train, y_train, alpha = 0, lambda = lambda_ridge, family = "binomial")
+
+# Make predictions on the test set
+ridge_probs <- predict(ridge_model, s = lambda_ridge, newx = x_test, type = "response")
+ridge_classes <- ifelse(ridge_probs > 0.5, 1, 0)
+
+# Evaluate the Ridge model
+library(caret)
+confusion_ridge <- confusionMatrix(as.factor(ridge_classes), as.factor(y_test), positive = "1")
+print(confusion_ridge)
+```
+
+#According to Confusion Matrix and Statistic Logistic Regression preformance:
+#	•	Accuracy: 87.50%
+#	•	Sensitivity: 88.23% (ability to correctly classify positive/poisonous cases) (Recall: True Positive)
+#	•	Specificity: 86.58% (ability to correctly classify negative/edible cases)
+#	•	False Negatives: 1,200 (number of poisonous mushrooms classified as edible) FP rate is 11.78%
+#AUC (Area Under Curve): 0.942 (excellent performance)
+
+#Interpretation:
+# Logistic Regression provides a good balance of sensitivity and specificity.
+# The false negative count (1,200) is critical, as identifying poisonous mushrooms is more important than edible ones in this context.
+
+
+#LASSO Regression
+# Optimal Lambda: 2.25 * 10^-5
+
+#Confusion Matrix and Statistics:
+#	•	Accuracy: 87.53% (slightly better than Logistic Regression)
+#	•	Sensitivity: 88.23% (very similar to Logistic Regression)
+#	•	Specificity: 86.65% (slightly better than Logistic Regression)
+#	•	False Negatives: 1,194 (slightly better than Logistic Regression)
+
+#Interpretation:
+#	•	LASSO performs similarly to Logistic Regression but with a slight improvement in specificity and false negatives.
+#	•	LASSO performs feature selection by shrinking less important coefficients to zero, which may simplify the model.
+
+
+
+#Ridge Regression
+
+#Optimal Lambda: 0.0107
+
+#Confusion Matrix and Statistics:
+#	•	Accuracy: 85.81% (worse than both Logistic and LASSO Regression)
+#	•	Sensitivity: 86.84% (lower than Logistic and LASSO Regression)
+#	•	Specificity: 84.50% (lower than Logistic and LASSO Regression)
+#	•	False Negatives: 1,386 (worse than both Logistic and LASSO Regression)
+
+#Interpretation:
+#	•	Ridge Regression performs worse than both Logistic and LASSO Regression.
+#	•	Ridge penalizes large coefficients but does not perform feature selection, which may not help much with this dataset.
+
+```{r}
+install.packages("corrplot")
+```
+
+
+
+
+```{r}
+install.packages("rpart")  # For decision tree
+install.packages("rpart.plot")  # For plotting the tree
+```
+
+```{r}
+library(rpart)
+library(rpart.plot)
+library(readxl)
+library(tree)
+#First, we read the excel file.
+data <- read_excel("Mushroom dataset3.xlsx")
+head(data)
+
+# Encode the target variable (class)
+data$class <- ifelse(data$class == "poisonous", 1, 0)
+
+# Split the data into training and testing sets
+set.seed(123) # For reproducibility
+train_index <- createDataPartition(data$class, p = 0.7, list = FALSE)
+train_data <- data[train_index, ]
+test_data <- data[-train_index, ]
+
+# Build a classification tree on the training set
+tree_model <- rpart(class ~ ., data = train_data, method = "class")
+
+# Plot the classification tree
+rpart.plot(tree_model, type = 4, extra = 102, fallen.leaves = TRUE, cex = 0.8)
+
+# Make predictions on the test set
+pred_probs <- predict(tree_model, test_data, type = "prob")[,2]
+pred_class <- ifelse(pred_probs > 0.5, 1, 0)
+
+# Generate confusion matrix
+conf_matrix <- confusionMatrix(factor(pred_class), factor(test_data$class))
+
+# Print the confusion matrix and accuracy
+print(conf_matrix)
+
+# Count the number of terminal nodes in the tree
+num_terminal_nodes <- sum(tree_model$frame$var == "<leaf>")
+cat("Number of Terminal Nodes:", num_terminal_nodes, "\n")
+
+# ROC Curve and AUC Calculation
+roc_curve <- roc(test_data$class, pred_probs)
+
+# Plot the ROC Curve
+plot(roc_curve, main = "ROC Curve", col = "blue", lwd = 2)
+abline(a = 0, b = 1, col = "gray", lty = 2) # Add diagonal line
+
+# Calculate and print AUC
+auc_value <- auc(roc_curve)
+cat("AUC:", auc_value, "\n")
+```
+#The classification model achieved an accuracy of 88.38%, with a 95% confidence interval of (87.91%, 88.84%), demonstrating strong predictive performance. The sensitivity (true positive rate) is 87.34%, indicating that the model correctly identified 87.34% of the edible mushrooms. The specificity (true negative rate) is 89.21%, showing it accurately classified 89.21% of the poisonous mushrooms.There are 12.66% of mushrooms predicted as edible are actually poisonous.The AUC value of 0.915 further confirms that the model has excellent discriminatory power between poisonous and edible mushrooms. The balanced accuracy of 88.28% highlights the model's robustness in handling class imbalances.
+
+
+#The classification tree model performs well with an overall accuracy of 88.38%, meaning that nearly 9 out of 10 predictions are correct. This high accuracy is supported by a 95% confidence interval ranging from 87.91% to 88.84%, indicating consistent performance on unseen data. The sensitivity of 87.34% reflects the model's effectiveness in correctly identifying edible mushrooms as safe, which is crucial in scenarios where minimizing false negatives (poisonous mushrooms misclassified as edible) is vital. Meanwhile, the specificity of 89.21% shows its strong ability to identify poisonous mushrooms accurately, reducing false positives.
+
+#The high AUC value of 0.915 confirms the model's excellent ability to differentiate between the two classes (poisonous and edible mushrooms). Additionally, the Kappa statistic of 0.7649 suggests substantial agreement between predicted and actual classifications, indicating reliability. The balanced accuracy of 88.28% further supports the model's strong performance, accounting for the class imbalance in the data.
+
+#The McNemar’s test p-value of 0.1452 indicates that there is no significant difference in the misclassification rates of the two classes, suggesting the model treats both classes fairly. Overall, the model is well-suited for the task, combining high accuracy, strong sensitivity and specificity, and robust discriminative ability as reflected in the AUC value. This makes it a reliable tool for identifying edible and poisonous mushrooms in practical applications.
+
+```{r}
+# Perform cross-validation and build the tree
+set.seed(123)
+tree_model <- rpart(class ~ ., data = train_data, method = "class", cp = 0.01, xval = 10)
+
+# Extract values from the complexity parameter table
+cp_table <- tree_model$cptable
+tree_size <- cp_table[, "nsplit"] + 1  # Number of terminal nodes
+misclassification_error <- cp_table[, "xerror"]  # Cross-validated error
+
+# Identify the optimal tree size based on minimum error
+optimal_index <- which.min(misclassification_error)
+optimal_tree_size <- tree_size[optimal_index]
+
+# Plot Tree Size vs. Misclassification Error
+plot(tree_size, misclassification_error, type = "b", col = "blue", pch = 19,
+     xlab = "Tree Size (Number of Terminal Nodes)",
+     ylab = "Misclassification Error",
+     main = "Cross-Validation for Optimal Tree Size",
+     xaxt = "n")  # Suppress default x-axis
+
+# Customize x-axis to show more numbers
+axis(1, at = seq(min(tree_size), max(tree_size), by = 1), las = 2)
+
+# Add a line for the 1-SE rule
+abline(h = min(misclassification_error) + cp_table[optimal_index, "xstd"], 
+       col = "red", lty = 2)
+
+# Highlight the optimal tree size on the plot
+points(optimal_tree_size, misclassification_error[optimal_index], col = "green", pch = 19, cex = 1.5)
+text(optimal_tree_size, misclassification_error[optimal_index], 
+     labels = paste("Optimal Tree Size =", optimal_tree_size), pos = 4, col = "green")
+
+# Print the decision tree structure
+print(tree_model)
+
+```
+
+#Deal with data imbalance. 
+```{r}
+# Create a weighted loss matrix
+# Loss matrix: rows = actual, columns = predicted
+# 0 = edible, 1 = poisonous
+loss_matrix <- matrix(c(0, 10, 1, 0), ncol = 2)
+
+# Build a classification tree with class weights
+set.seed(123)
+weighted_tree <- rpart(class ~ ., data = train_data, method = "class",
+                       parms = list(loss = loss_matrix), xval = 10, cp = 0.01)
+
+# Print the updated tree structure
+print(weighted_tree)
+
+# Plot the updated tree
+rpart.plot(weighted_tree, type = 4, extra = 102, fallen.leaves = TRUE, cex = 0.8, main = "Weighted Decision Tree")
+
+# Evaluate the performance of the weighted tree on the test data
+weighted_pred_probs <- predict(weighted_tree, test_data, type = "prob")[,2]
+weighted_pred_class <- ifelse(weighted_pred_probs > 0.5, 1, 0)
+
+# Confusion Matrix for the weighted tree
+cat("\nWeighted Tree Confusion Matrix:\n")
+weighted_conf_matrix <- confusionMatrix(factor(weighted_pred_class), factor(test_data$class))
+print(weighted_conf_matrix)
+
+# AUC for the weighted tree
+weighted_roc <- roc(test_data$class, weighted_pred_probs)
+cat("\nWeighted Tree AUC:", auc(weighted_roc), "\n")
+
+# Load required libraries
+library(pROC)
+
+# Generate ROC curve data
+weighted_roc <- roc(test_data$class, weighted_pred_probs)
+
+# Plot the ROC curve
+plot(weighted_roc, 
+     main = "ROC Curve for Weighted Decision Tree",
+     col = "blue", 
+     lwd = 2, 
+     print.auc = TRUE, 
+     legacy.axes = TRUE)
+
+# Add diagonal reference line
+abline(a = 0, b = 1, col = "gray", lty = 2)
+
+```
+#In this analysis, we aimed to classify mushrooms as either edible (class = 0) or poisonous (class = 1), focusing on minimizing the risk of misclassifying poisonous mushrooms as edible (false negatives). Initially, our dataset exhibited a slight imbalance, with 44.09% edible mushrooms and 55.91% poisonous mushrooms. Using the unweighted decision tree model, we achieved high overall accuracy (88.38%) with balanced sensitivity (87.34%) and specificity (89.21%). However, given the high stakes of false negatives (classifying poisonous mushrooms as edible), we sought to address the data imbalance more explicitly. We constructed a decision tree using the rpart package, leveraging features such as gill color, stem color, and cap surface. While the tree performed well overall, the trade-off between sensitivity and specificity was not optimized for reducing false negatives.To handle the imbalance, we incorporated a weighted loss matrix into the decision tree model. This matrix penalized false negatives (poisonous classified as edible) more heavily than false positives.
+
+#Specifically: A misclassification of poisonous mushrooms as edible incurred a penalty of 10. A misclassification of edible mushrooms as poisonous incurred a penalty of 1. By using class weights, we explicitly aligned the model's focus with the critical goal of minimizing false negatives.
+
+#The weighted tree significantly reduced the number of false positives (edible mushrooms classified as poisonous) to just 59. However, this came at the cost of more false negatives (3,119) and a reduced overall accuracy of 82.55%. Specificity (ability to correctly identify poisonous mushrooms) improved to 99.42%, nearly perfect. Sensitivity (ability to correctly identify edible mushrooms) dropped to 61.44%, reflecting the prioritization of the poisonous class.
+
+
+
+
+```{r}
+library(ggplot2)
+
+# Filter data for gill-attachment = free, pores and specified stem-surface categories
+filtered_data <- train_data %>%
+  dplyr::filter(`gill-attachment` %in% c("free", "pores") & 
+                `stem-surface` %in% c("fibrous", "smooth", "scaly", "silky", "unknown"))
+
+# Add a column for predicted class (edible or poisonous)
+filtered_data$Prediction <- ifelse(filtered_data$class == 0, "Edible", "Poisonous")
+
+# Plot the relationship
+ggplot(filtered_data, aes(x = `gill-attachment`, fill = Prediction)) +
+  geom_bar(position = "stack", color = "black") +
+  facet_wrap(~`stem-surface`, scales = "free") +
+  labs(title = "Relationship Between Gill-Attachment, Stem-Surface, and Edibility",
+       x = "Gill-Attachment",
+       y = "Count",
+       fill = "Prediction") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+
+
+
+
+```{r}
+# Install randomForest package if not already installed
+if (!require(randomForest)) install.packages("randomForest")
+if (!require(pROC)) install.packages("pROC")
+if (!require(caret)) install.packages("caret")
+
+library(randomForest)
+library(pROC)
+library(caret)
+
+```
+
+
+
+```{r}
+# Load required libraries
+library(caret)
+library(randomForest)
+
+# Train a Random Forest model
+set.seed(123)  # For reproducibility
+rf_model <- randomForest(class01 ~ .-class, 
+                         data = mushroom_train, 
+                         ntree = 100, 
+                         importance = TRUE)
+summary(rf_model)
+
+# Make predictions on the test set
+rf_predictions <- predict(rf_model, mushroom_test)
+
+# Evaluate the model's performance
+confusion_matrix <- confusionMatrix(rf_predictions, mushroom_test$class01)
+
+# Display the confusion matrix and overall accuracy
+print(confusion_matrix)
+
+# Display feature importance
+importance <- importance(rf_model)
+varImpPlot(rf_model)
+
+```
+
+
+
+```{r}
+# Load necessary libraries
+library(corrplot)
+library(dplyr)
+
+# Ensure all factor columns are converted to numeric
+numeric_data <- mushroom_train %>%
+  select(-class, -class01) %>%
+  mutate(across(where(is.factor), as.numeric))
+
+# Compute the correlation matrix (Spearman method)
+cor_matrix <- cor(numeric_data, method = "spearman")
+
+# Convert the correlation matrix to a long format for ggplot2
+cor_data <- melt(cor_matrix)
+
+# Plot the heatmap
+ggplot(cor_data, aes(Var1, Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Spearman Correlation Heatmap",
+       x = "Features",
+       y = "Features",
+       fill = "Correlation")
+```
+
+
+
+
+#boosting
+```{r}
+# Load required libraries
+library(gbm)
+library(caret)
+
+# Convert target to numeric for GBM
+mushroom_train$class01 <- as.numeric(as.character(mushroom_train$class01))  # Convert factor to numeric
+mushroom_test$class01 <- as.numeric(as.character(mushroom_test$class01))
+
+# Train a Gradient Boosting Model
+set.seed(123)
+gbm_model <- gbm(
+  formula = class01 ~ ., 
+  data = mushroom_train %>% select(-class),
+  distribution = "bernoulli",
+  n.trees = 100,          
+  interaction.depth = 3,  
+  shrinkage = 0.1,        
+  n.minobsinnode = 10     
+)
+
+# Make predictions on the test set
+gbm_predictions <- predict(gbm_model, mushroom_test, n.trees = 100, type = "response")
+gbm_class <- ifelse(gbm_predictions > 0.5, 1, 0)
+
+# Evaluate the model
+confusionMatrix(as.factor(gbm_class), as.factor(mushroom_test$class01))
+summary(gbm_model)
+
+
+```
+#Top Features:cap.surface: Most influential feature, contributing the most to the predictions.stem.color and gill.attachment: Also highly influential, ranking just below cap.surface. Other features, such as stem.root, stem.surface, and cap.color, contribute significantly but less than the top three.
+#The model relies heavily on cap.surface, stem.color, and gill.attachment to make decisions. These features likely have strong patterns that correlate with the target variable (poisonous vs. edible).
+
+
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
